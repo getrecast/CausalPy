@@ -58,6 +58,24 @@ class SyntheticControl(BaseExperiment):
     **kwargs
         Additional keyword arguments forwarded to :class:`BaseExperiment`.
 
+    Attributes
+    ----------
+    post_pred : az.InferenceData
+        Posterior predictive samples for the post-treatment period, containing
+        both ``mu`` (parameter uncertainty only) and ``y_hat`` (parameter +
+        observation noise) under the ``posterior_predictive`` group.
+    post_impact : xr.DataArray
+        Causal impact (observed minus predicted ``mu``) for the post-treatment
+        period, with dimensions (chain, draw, treated_units, obs_ind).
+    post_impact_cumulative : xr.DataArray
+        Cumulative causal impact over the post-treatment period.
+    pre_pred : az.InferenceData
+        Posterior predictive samples for the pre-treatment period.
+    pre_impact : xr.DataArray
+        Causal impact for the pre-treatment period (should be near zero).
+    score : pd.Series
+        Bayesian R-squared for the pre-treatment fit.
+
     Notes
     -----
     For Bayesian models, the causal impact is calculated using the posterior expectation
@@ -65,6 +83,10 @@ class SyntheticControl(BaseExperiment):
     its uncertainty represent the systematic causal effect, excluding observation-level
     noise. The uncertainty bands in the plots reflect parameter uncertainty and
     counterfactual prediction uncertainty, but not individual observation variability.
+
+    The attribute types documented above describe the default Bayesian
+    (:class:`WeightedSumFitter`) backend. With an sklearn model the prediction and
+    impact attributes are NumPy arrays and ``score`` is a scalar.
 
     Examples
     --------
