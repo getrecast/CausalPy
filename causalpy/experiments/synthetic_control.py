@@ -66,6 +66,41 @@ class SyntheticControl(BaseExperiment):
     noise. The uncertainty bands in the plots reflect parameter uncertainty and
     counterfactual prediction uncertainty, but not individual observation variability.
 
+    .. warning::
+        The default ``WeightedSumFitter`` prior on ``sigma`` (the scale of the residuals)
+        is ``HalfNormal(1)``, which assumes the data is approximately on unit scale. If
+        your outcome variable has values much larger than 1, the prior will likely
+        severely constrain ``sigma``, producing confidence intervals that are much too
+        narrow.
+
+        It may be wise to specify a different prior on ``sigma``. One approach would be to
+        use the pre-treatment standard deviation of the treated units as a reference
+        point::
+
+            from pymc_extras.prior import Prior
+
+            pre_treatment_treated = data.loc[data.index < treatment_time, treated_units]
+            y_std = float(pre_treatment_treated.std().mean())
+            model = WeightedSumFitter(
+                sample_kwargs=sample_kwargs,
+                priors={
+                    "y_hat": Prior(
+                        "Normal",
+                        sigma=Prior(
+                            "Exponential", lam=2 / y_std, dims=["treated_units"]
+                        ),
+                        dims=["obs_ind", "treated_units"],
+                    )
+                },
+            )
+
+        Alternatively, you could standardize your data prior to fitting. Note that
+        standardizing changes the relative relationships between the columns, so the
+        standardized model is not simply a rescaled version of the unstandardized fit — it
+        is a different model that produces different effect estimates. In order to get the
+        effect estimate on the original scale, you will need to multiply the estimated
+        effect (and its uncertainty bounds) by the treatment standard deviation.
+
     Examples
     --------
     >>> import causalpy as cp
