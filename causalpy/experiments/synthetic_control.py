@@ -303,7 +303,9 @@ class SyntheticControl(BaseExperiment):
 
     def algorithm(self) -> None:
         """Run the experiment algorithm: fit model, predict, and calculate causal impact."""
-        # Auto-scale the sigma prior if the user didn't customize it
+        # Auto-scale the sigma prior if the user didn't customize it.
+        # Triggers only for certain model backends because only these expose
+        # a y_hat prior.
         if (
             self.auto_scale_sigma
             and isinstance(self.model, (WeightedSumFitter, SoftmaxWeightedSumFitter))
