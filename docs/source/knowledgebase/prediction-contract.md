@@ -1,6 +1,6 @@
 # Prediction contract for causal impact
 
-CausalPy calculates Bayesian causal impact as the difference between observed outcomes and a counterfactual **expected outcome** in observed outcome units. Experiments call :meth:`~causalpy.pymc_models.PyMCModel.calculate_impact`, which subtracts ``posterior_predictive["mu"]`` from the observed ``y``. That subtraction only has a causal interpretation when ``mu`` is the conditional expectation :math:`E[Y \mid \text{parameters}, \text{covariates}]` on the **response scale**, excluding observation-level noise.
+CausalPy calculates Bayesian causal impact as the difference between observed outcomes and a counterfactual **expected outcome** in observed outcome units. Experiments call the model adapter's ``predict()``, which extracts ``posterior_predictive["mu"]``, and subtract that from the observed ``y``. That subtraction only has a causal interpretation when ``mu`` is the conditional expectation :math:`E[Y \mid \text{parameters}, \text{covariates}]` on the **response scale**, excluding observation-level noise.
 
 Gaussian models with an identity link make the linear predictor, conditional expectation, and outcome scale look interchangeable. For generalized linear models they are not. With a Poisson log link, the linear predictor :math:`\eta` is on the log-rate scale while counts live on the outcome scale; CausalPy needs :math:`\exp(\eta) = E[Y \mid \cdot]` in ``mu``, not :math:`\eta` itself. The same principle applies to Bernoulli/logit models, where ``mu`` must be a probability in :math:`(0, 1)`.
 
@@ -14,7 +14,7 @@ Gaussian models with an identity link make the linear predictor, conditional exp
 
 **Impact** uses the middle row: draw-level contrasts ``y - mu`` are computed in outcome units, then summarized. **Plots and effect summaries** inherit this convention unless a method documents a different estimand (for example link-scale regression coefficients).
 
-Posterior transformations for nonlinear models must be applied **draw by draw** before contrasts or averages. In general, ``inverse_link(mean(eta))`` differs from ``mean(inverse_link(eta))``; g-computation averages unit-level potential outcomes on the response scale. See {doc}`estimands` for how this relates to empirical estimands and {doc}`../notebooks/g-computation-link-functions-pymc` for worked Poisson and logit examples.
+Posterior transformations for nonlinear models must be applied **draw by draw** before contrasts or averages. In general, ``inverse_link(mean(eta))`` differs from ``mean(inverse_link(eta))``; g-computation averages unit-level potential outcomes on the response scale. See {doc}`estimands` for how this relates to empirical estimands. A worked tutorial notebook is tracked in `CausalPy#1017 <https://github.com/pymc-labs/CausalPy/issues/1017>`_.
 
 ## Backend obligations
 
@@ -29,6 +29,16 @@ Every Bayesian backend that participates in impact calculation must expose outco
 
 sklearn backends compute impact as ``y_true - y_pred`` with the same outcome-scale requirement.
 
+## Score container
+
+Every model adapter returns scores in one canonical ``pandas.Series``. Each treated unit has a required ``unit_{i}_r2`` entry in treated-unit order. Bayesian backends additionally provide ``unit_{i}_r2_std`` when posterior draws supply dispersion; point-estimate backends omit the standard-deviation entry rather than inventing uncertainty.
+
+For multi-output sklearn models, CausalPy computes one :math:`R^2` per output instead of exposing sklearn's default uniform average. The shared container does not make the statistics identical: PyMC reports Bayesian :math:`R^2` and its posterior dispersion, while sklearn reports classical point-estimate :math:`R^2`. It only guarantees that consumers can locate each unit's score without knowing which backend produced it.
+
+This is a user-visible change for sklearn experiments: ``experiment.score`` is a keyed ``pandas.Series`` rather than a bare float. Single-output users should read ``experiment.score["unit_0_r2"]``.
+
+For direct adapter callers, ``SklearnModelAdapter.score()`` keyword arguments follow :func:`sklearn.metrics.r2_score` (for example ``sample_weight``), not the underlying estimator's ``score`` method. ``multioutput`` is fixed to ``"raw_values"`` so each treated unit keeps its own ``unit_{i}_r2`` entry.
+
 ## Public name and compatibility
 
 The public posterior predictive name remains ``mu`` for backward compatibility. The contract is **semantic**, not lexical: ``mu`` must denote the conditional expected outcome in observed units. A future explicit name such as ``expected_outcome`` may be added in a minor release once all built-in backends are audited; until then, custom model authors should treat ``mu`` as that quantity.
@@ -38,7 +48,7 @@ The public posterior predictive name remains ``mu`` for backward compatibility. 
 1. Compute the linear predictor or latent state on the link scale if needed, but do not expose it as ``mu`` unless the outcome scale is the identity link.
 2. Apply the inverse link draw by draw and register the result as a ``Deterministic`` named ``mu`` with dims ``["obs_ind", "treated_units"]``.
 3. Keep ``y_hat`` as the likelihood / posterior predictive of the observed variable (including sampling noise where applicable).
-4. Ensure ``predict()`` returns both ``mu`` and ``y_hat`` in ``posterior_predictive`` so :meth:`~causalpy.pymc_models.PyMCModel.calculate_impact` and :meth:`~causalpy.pymc_models.PyMCModel.score` behave consistently.
+4. Ensure ``predict()`` returns both ``mu`` and ``y_hat`` in ``posterior_predictive`` so the model adapter's ``predict()`` and :meth:`~causalpy.pymc_models.PyMCModel.score` behave consistently.
 
 Fast regression tests in ``causalpy/tests/test_prediction_contract.py`` encode this contract for identity-link Gaussian, Poisson log-link, and Bernoulli logit models.
 

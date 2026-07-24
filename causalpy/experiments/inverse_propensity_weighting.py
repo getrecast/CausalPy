@@ -53,6 +53,12 @@ class InversePropensityWeighting(BaseExperiment):
     **kwargs
         Additional keyword arguments forwarded to :class:`BaseExperiment`.
 
+    Notes
+    -----
+    **Estimate extraction**
+
+    Fitting produces posterior propensity-score draws. ``get_ate()`` post-processes one draw at a time: ``"raw"`` and ``"robust"`` contrast inverse-probability-weighted mean outcomes for the treated and control potential outcomes, ``"overlap"`` contrasts overlap-weighted means for the overlap population, and ``"doubly_robust"`` augments inverse-probability weighting with separate OLS outcome regressions before averaging over all observations.
+
     Examples
     --------
     >>> import causalpy as cp
@@ -565,7 +571,7 @@ class InversePropensityWeighting(BaseExperiment):
         ----------
         idata : az.InferenceData | None, optional
             ArviZ InferenceData with posterior propensity score samples.
-            If ``None``, uses ``self.model.idata``.
+            If ``None``, uses the fitted model backend's InferenceData.
         method : str | None, optional
             Weighting scheme to apply.  One of ``'robust'``, ``'raw'``,
             ``'overlap'``, or ``'doubly_robust'``.  If ``None``, falls back
@@ -583,7 +589,7 @@ class InversePropensityWeighting(BaseExperiment):
             The matplotlib Figure and a list of three Axes objects.
         """
         if idata is None:
-            idata = self.model.idata
+            idata = self._model_backend.require_idata()
         if method is None:
             method = self.weighting_scheme
 
@@ -768,7 +774,7 @@ class InversePropensityWeighting(BaseExperiment):
             matrix labels) to check for balance.
         idata : az.InferenceData | None, optional
             ArviZ InferenceData containing posterior propensity score samples.
-            If ``None``, uses ``self.model.idata``.
+            If ``None``, uses the fitted model backend's InferenceData.
         weighting_scheme : str | None, optional
             Weighting scheme to apply.  One of ``'raw'``, ``'robust'``, or
             ``'overlap'``.  If ``None``, falls back to
@@ -781,7 +787,7 @@ class InversePropensityWeighting(BaseExperiment):
             the left, weighted ECDF on the right).
         """
         if idata is None:
-            idata = self.model.idata
+            idata = self._model_backend.require_idata()
         if weighting_scheme is None:
             weighting_scheme = self.weighting_scheme
 

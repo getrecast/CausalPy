@@ -84,6 +84,10 @@ class PanelRegression(BaseExperiment):
 
     Notes
     -----
+    **Estimate extraction**
+
+    ``PanelRegression`` fits the formula after representing fixed effects with dummy variables or demeaning, but it does not select a treatment term or compute a single built-in causal effect. Any causal estimand is extracted from the fitted coefficient chosen by the analyst, and its interpretation depends on the formula and identification assumptions.
+
     The demeaned transformation (de-meaning by group) removes time-invariant
     confounders but also drops time-invariant covariates from the model. For
     the ``"dummies"`` approach (unpooled FE), individual unit effects can be
@@ -430,6 +434,8 @@ class PanelRegression(BaseExperiment):
             )
 
         print("\nModel Coefficients:")
+        # Backend-identity branch is justified: coefficient access is
+        # backend-native (PanelRegression stores no canonical container).
         if self._model_backend.is_bayesian:
             # PyMC print_coefficients uses coordinate-based lookup so a
             # filtered label list works correctly.
@@ -549,18 +555,21 @@ class PanelRegression(BaseExperiment):
             hdi_prob=hdi_prob,
         )
 
-    def _bayesian_plot(
+    def _plot(
         self, hdi_prob: float = HDI_PROB, **kwargs: Any
     ) -> tuple[plt.Figure, plt.Axes]:
-        """Create coefficient plot for Bayesian model.
+        """Create coefficient plot.
+
+        Bayesian models render a forest plot with HDI intervals; point-estimate
+        models render a bar plot of coefficient values.
 
         Parameters
         ----------
         hdi_prob : float, optional
             Probability mass of the highest density interval drawn around each
             posterior coefficient via :func:`arviz.plot_forest`. Must be in
-            ``(0, 1]``. Defaults to :data:`~causalpy.constants.HDI_PROB`
-            (currently 0.94).
+            ``(0, 1]``. Ignored for point-estimate models. Defaults to
+            :data:`~causalpy.constants.HDI_PROB` (currently 0.94).
 
         Returns
         -------
@@ -568,16 +577,6 @@ class PanelRegression(BaseExperiment):
             Figure and axes objects
         """
         return self._plot_coefficients_internal(hdi_prob=hdi_prob)
-
-    def _ols_plot(self, **kwargs: Any) -> tuple[plt.Figure, plt.Axes]:
-        """Create coefficient plot for OLS model.
-
-        Returns
-        -------
-        tuple[plt.Figure, plt.Axes]
-            Figure and axes objects
-        """
-        return self._plot_coefficients_internal()
 
     def _plot_coefficients_internal(
         self, var_names: list[str] | None = None, hdi_prob: float = HDI_PROB
@@ -599,10 +598,12 @@ class PanelRegression(BaseExperiment):
 
         coeff_names = var_names if var_names is not None else self._get_non_fe_labels()
 
+        # Backend-identity branch is justified: coefficient posteriors live in
+        # backend-native storage (idata vs get_coeffs); no canonical container.
         if self._model_backend.is_bayesian:
             # Bayesian: use az.plot_forest directly
             axes = az.plot_forest(
-                self.model.idata,
+                self._model_backend.require_idata(),
                 var_names=["beta"],
                 coords={"coeffs": coeff_names},
                 combined=True,
@@ -627,8 +628,11 @@ class PanelRegression(BaseExperiment):
         plt.tight_layout()
         return fig, ax
 
-    def get_plot_data_bayesian(self, **kwargs: Any) -> pd.DataFrame:
-        """Get plot data for Bayesian model.
+    def get_plot_data(self, **kwargs: Any) -> pd.DataFrame:
+        """Get plot data with fitted values.
+
+        Bayesian models additionally return ``y_fitted_lower`` /
+        ``y_fitted_upper`` 95% credible-interval columns.
 
         Parameters
         ----------
@@ -639,58 +643,29 @@ class PanelRegression(BaseExperiment):
         Returns
         -------
         pd.DataFrame
-            DataFrame with fitted values and credible intervals
+            DataFrame with fitted values (and credible intervals when the
+            model carries posterior draws).
         """
-        # Get posterior predictions
+        columns: dict[str, Any] = {"y_actual": self.design["y"].values.flatten()}
+
+        # ponytail: PanelRegression stores no canonical prediction container,
+        # so in-sample fitted values must come from backend-native objects
+        # (idata mu vs sklearn predict); the branch is isolated here. Upgrade
+        # path: store canonical in-sample predictions at fit time.
         if self._model_backend.is_bayesian:
-            mu = self.model.idata.posterior["mu"]  # type: ignore[union-attr]
-            pred_mean = mu.mean(dim=["chain", "draw"]).values.flatten()
-            pred_lower = mu.quantile(0.025, dim=["chain", "draw"]).values.flatten()
-            pred_upper = mu.quantile(0.975, dim=["chain", "draw"]).values.flatten()
+            mu = self._model_backend.require_idata().posterior["mu"]
+            columns["y_fitted"] = mu.mean(dim=["chain", "draw"]).values.flatten()
+            columns["y_fitted_lower"] = mu.quantile(
+                0.025, dim=["chain", "draw"]
+            ).values.flatten()
+            columns["y_fitted_upper"] = mu.quantile(
+                0.975, dim=["chain", "draw"]
+            ).values.flatten()
         else:
-            raise ValueError("Model is not a PyMC model")
+            columns["y_fitted"] = np.squeeze(self.model.predict(self.design["X"]))
+        columns[self.unit_fe_variable] = self.data[self.unit_fe_variable].values
 
-        plot_data = pd.DataFrame(
-            {
-                "y_actual": self.design["y"].values.flatten(),
-                "y_fitted": pred_mean,
-                "y_fitted_lower": pred_lower,
-                "y_fitted_upper": pred_upper,
-                self.unit_fe_variable: self.data[self.unit_fe_variable].values,
-            }
-        )
-
-        if self.time_fe_variable:
-            plot_data[self.time_fe_variable] = self.data[self.time_fe_variable].values
-
-        return plot_data
-
-    def get_plot_data_ols(self, **kwargs: Any) -> pd.DataFrame:
-        """Get plot data for OLS model.
-
-        Parameters
-        ----------
-        **kwargs
-            Reserved for forward-compatibility; not consumed by this
-            implementation.
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame with fitted values
-        """
-        if self._model_backend.is_ols:
-            y_fitted = np.squeeze(self.model.predict(self.design["X"]))
-        else:
-            raise ValueError("Model is not an OLS model")
-
-        plot_data = pd.DataFrame(
-            {
-                "y_actual": self.design["y"].values.flatten(),
-                "y_fitted": y_fitted,
-                self.unit_fe_variable: self.data[self.unit_fe_variable].values,
-            }
-        )
+        plot_data = pd.DataFrame(columns)
 
         if self.time_fe_variable:
             plot_data[self.time_fe_variable] = self.data[self.time_fe_variable].values
@@ -762,9 +737,11 @@ class PanelRegression(BaseExperiment):
 
         fig, ax = plt.subplots(figsize=(10, 6))
 
+        # Backend-identity branch is justified: coefficient posteriors live in
+        # backend-native storage (idata vs get_coeffs); no canonical container.
         if self._model_backend.is_bayesian:
             # Bayesian: get posterior means
-            beta = self.model.idata.posterior["beta"]  # type: ignore[union-attr]
+            beta = self._model_backend.require_idata().posterior["beta"]
             unit_fe_indices = [self.labels.index(name) for name in unit_fe_names]
 
             # Get mean and std for each unit FE
@@ -855,17 +832,20 @@ class PanelRegression(BaseExperiment):
         if interval_type not in {"mean", "predictive"}:
             raise ValueError("interval_type must be 'mean' or 'predictive'")
 
-        # Check if model is Bayesian
+        # Backend-identity branch is justified: in-sample mu / y_hat draws
+        # live in backend-native idata (PanelRegression stores no canonical
+        # prediction container; see the ponytail note in get_plot_data).
         is_bayesian = self._model_backend.is_bayesian
 
         # Get posterior for HDI plotting (Bayesian only)
         if is_bayesian:
-            mu = self.model.idata.posterior["mu"]  # type: ignore[union-attr]
+            idata = self._model_backend.require_idata()
+            mu = idata.posterior["mu"]
             if interval_type == "predictive":
                 posterior_predictive = getattr(
-                    self.model.idata,
+                    idata,
                     "posterior_predictive",
-                    None,  # type: ignore[union-attr]
+                    None,
                 )
                 if posterior_predictive is None or "y_hat" not in posterior_predictive:
                     raise ValueError(
@@ -1014,11 +994,7 @@ class PanelRegression(BaseExperiment):
         tuple[plt.Figure, plt.Axes]
             Figure and axes objects
         """
-        # Get plot data
-        if self._model_backend.is_bayesian:
-            plot_data = self.get_plot_data_bayesian()
-        else:
-            plot_data = self.get_plot_data_ols()
+        plot_data = self.get_plot_data()
 
         # Calculate residuals
         residuals = plot_data["y_actual"] - plot_data["y_fitted"]
